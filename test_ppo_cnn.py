@@ -171,7 +171,7 @@ def evaluate(board_size, opponent_agent, games=100):
 
 def main():
     board_size = 7
-    games = 100
+    games = 500
 
     win_rate_random = evaluate(board_size, random_agent, games)
     win_rate_greedy = evaluate(board_size, greedy_agent, games)
