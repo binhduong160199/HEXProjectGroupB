@@ -14,7 +14,6 @@ MODEL_PATH = "ppo_cnn_hex.pt"
 
 # Cache model to avoid reloading every time the agent is called
 _loaded_model = None 
-_loaded_board_size = None
 
 # Convert to index for model input/output
 def action_to_index(move, board_size):
@@ -117,21 +116,29 @@ def choose_center_move(board, action_set):
 
 
 def load_model(board_size):
-    global _loaded_model, _loaded_board_size
+    global _loaded_model
 
-    if _loaded_model is not None and _loaded_board_size == board_size:
+    if _loaded_model is not None:
         return _loaded_model
 
     model = HexCNNPolicy(board_size)
 
     if os.path.exists(MODEL_PATH):
-        model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+        checkpoint = torch.load(MODEL_PATH, map_location="cpu")
+        try:
+            model.load_state_dict(checkpoint)
+        except RuntimeError:
+            print(
+                "Warning: ppo_cnn_hex.pt is not compatible with the current "
+                "fully convolutional model. Retrain to create a new checkpoint."
+            )
+            return None
         model.eval()
     else:
         print("Warning: ppo_cnn_hex.pt not found. Using center move fallback.")
+        return None
 
     _loaded_model = model
-    _loaded_board_size = board_size
 
     return model
 
@@ -159,6 +166,9 @@ def cnn_ppo_agent(board, action_set):
         return choose_center_move(board, action_set)
 
     model = load_model(board_size)
+    if model is None:
+        return choose_center_move(board, action_set)
+
     state = encode_board(board, current_player).unsqueeze(0)
 
     with torch.no_grad():
