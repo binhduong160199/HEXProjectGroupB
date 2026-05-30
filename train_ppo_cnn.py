@@ -3,24 +3,23 @@ import torch.optim as optim
 from torch.distributions import Categorical
 import heapq
 import os
-from random import choice, random, uniform
+from random import choice, random
 
 from hex_engine import hexPosition, EMPTY, RED, BLUE
 from submission.cnn_policy import HexCNNPolicy
 from submission.board_encoding import encode_board
 
 
-EPISODES = 3000
+EPISODES = 10000
 OLD_SELF_DIR = "checkpoints/old_self"
-OLD_SELF_INTERVAL = 300
-OLD_SELF_START_EPISODE = 900
+OLD_SELF_INTERVAL = 500
+OLD_SELF_START_EPISODE = 4000
 MAX_OLD_SELF_MODELS = 6
 
 CURRICULUM_PHASES = [
-    (0.20, 5, "random", 0.0, 0.08),
-    (0.40, 5, "epsilon_greedy", 0.5, 0.06),
-    (0.60, 7, "epsilon_greedy", 0.2, 0.05),
-    (0.80, 9, "greedy", 0.0, 0.04),
+    (0.10, 5, "random", 0.0, 0.08),
+    (0.25, 7, "epsilon_greedy", 0.3, 0.06),
+    (0.40, 9, "greedy", 0.0, 0.04),
     (1.00, 11, "league", 0.0, 0.03),
 ]
 
@@ -350,7 +349,7 @@ def choose_league_curriculum_settings(board_size, shaping_scale):
     if roll < 0.55:
         return board_size, "greedy", 0.0, shaping_scale
 
-    return board_size, "epsilon_greedy", uniform(0.05, 0.35), shaping_scale
+    return board_size, "epsilon_greedy", 0.2, shaping_scale
 
 
 def select_action(model, board, current_player, action_set, board_size, device):
