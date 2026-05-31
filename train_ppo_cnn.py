@@ -17,10 +17,10 @@ OLD_SELF_START_EPISODE = 4000
 MAX_OLD_SELF_MODELS = 6
 
 CURRICULUM_PHASES = [
-    (0.10, 5, "random", 0.0, 0.08),
-    (0.25, 7, "epsilon_greedy", 0.3, 0.06),
-    (0.40, 9, "greedy", 0.0, 0.04),
-    (1.00, 11, "league", 0.0, 0.03),
+    (0.10, 5, "random", 0.0, 0.10),
+    (0.25, 7, "epsilon_greedy", 0.3, 0.05),
+    (0.60, 11, "greedy", 0.0, 0.02),
+    (1.00, 11, "league", 0.0, 0.00),
 ]
 
 GAMMA = 0.99
@@ -340,16 +340,16 @@ def get_curriculum_settings(episode):
 def choose_league_curriculum_settings(board_size, shaping_scale):
     roll = random()
 
-    if roll < 0.25:
-        return board_size, "old_self", 0.0, shaping_scale
-
-    if roll < 0.40:
-        return board_size, "self_play", 0.0, shaping_scale
-
-    if roll < 0.55:
+    if roll < 0.45:
         return board_size, "greedy", 0.0, shaping_scale
 
-    return board_size, "epsilon_greedy", 0.2, shaping_scale
+    if roll < 0.75:
+        return board_size, "epsilon_greedy", 0.2, shaping_scale
+
+    if roll < 0.90:
+        return board_size, "old_self", 0.0, shaping_scale
+
+    return board_size, "self_play", 0.0, shaping_scale
 
 
 def select_action(model, board, current_player, action_set, board_size, device):
