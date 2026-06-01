@@ -1,10 +1,12 @@
 import time
 import heapq
+import random
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
+import numpy as np
 from torch.distributions import Categorical
-from random import choice, random
+from random import choice, random as rand_func
 from copy import deepcopy
 
 from hex_engine import hexPosition, EMPTY, RED, BLUE
@@ -12,23 +14,36 @@ from submission.cnn_policy import HexCNNPolicy
 from submission.board_encoding import encode_board
 
 # ==============================================================================
+# 1. CRITICAL: FORCE DETERMINISTIC RANDOM SEEDS FOR REPRODUCIBILITY
+# ==============================================================================
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    # Ensures internal CPU calculations match identically on every run
+    torch.use_deterministic_algorithms(False) 
+
+set_seed(42)
+
+# ==============================================================================
 # REINFORCEMENT LEARNING TUNED CURRICULUM CONFIGURATION
 # ==============================================================================
 CURRICULUM = [
     # Stage 1: 3x3 - High initial exploration to learn basic layout rules
-    {"board_size": 3, "episodes": 4000, "epsilon_start": 0.40, "epsilon_end": 0.15, "block_reward": 0.05, "win_reward": 0.10},
+    {"board_size": 3, "episodes": 4000, "epsilon_start": 0.40, "epsilon_end": 0.15, "block_reward": 0.05, "win_reward": 0.10, "lr": 0.00001},
     
     # Stage 2: 5x5 - Strategic transition with higher stakes for tactical mistakes
-    {"board_size": 5, "episodes": 5000, "epsilon_start": 0.25, "epsilon_end": 0.08, "block_reward": 0.15, "win_reward": 0.25},
+    {"board_size": 5, "episodes": 5000, "epsilon_start": 0.25, "epsilon_end": 0.08, "block_reward": 0.15, "win_reward": 0.25, "lr": 0.00001},
     
-    # Stage 3: 7x7 - Target size refinement. Low final exploration to cement a winning policy
-    {"board_size": 7, "episodes": 6000, "epsilon_start": 0.12, "epsilon_end": 0.02, "block_reward": 0.30, "win_reward": 0.50}
+    # Stage 3: 7x7 - Target size refinement with dynamic recovery step tracking
+    {"board_size": 7, "episodes": 6000, "epsilon_start": 0.15, "epsilon_end": 0.02, "block_reward": 0.30, "win_reward": 0.50, "lr": 0.00003}
 ]
 
 GAMMA = 0.97
 PPO_EPOCHS = 2
 CLIP_EPSILON = 0.15
-LEARNING_RATE = 0.00001
 ENTROPY_COEF = 0.0005
 VALUE_COEF = 0.25
 MAX_GRAD_NORM = 0.2
@@ -156,7 +171,7 @@ def random_agent(board, action_set):
 def epsilon_greedy_agent(board, action_set, epsilon=0.2):
     if not action_set:
         return None
-    if random() < epsilon:
+    if rand_func() < epsilon:
         return random_agent(board, action_set)
     return greedy_agent(board, action_set)
 
@@ -208,7 +223,6 @@ def shortest_connection_distance(board, player):
 def compute_path_potential_reward(board, action_set, move, player, stage_cfg, episode_in_stage):
     opponent = -player
     
-    # Early path weights from baseline potential matrix
     path_w = 0.010 if episode_in_stage > 2000 else 0.008
     opp_w = 0.005 if episode_in_stage > 2000 else 0.003
     reward_clip = 0.08 if episode_in_stage > 2000 else 0.05
@@ -240,7 +254,6 @@ def compute_path_potential_reward(board, action_set, move, player, stage_cfg, ep
         if move == opponent_winning_move:
             reward += stage_cfg["block_reward"]
         else:
-            # Heavily punish missed blocks to force tactical awareness against rule baselines
             reward -= (stage_cfg["block_reward"] * 2.0)
 
     return max(min(reward, reward_clip), -reward_clip)
@@ -274,7 +287,7 @@ def select_action(model, board, current_player, action_set, board_size, device, 
 
     dist = Categorical(logits=masked_logits)
 
-    if random() < epsilon:
+    if rand_func() < epsilon:
         move = choice(action_set)
         action_index = torch.tensor(action_to_index(move, board_size), device=device)
     else:
@@ -347,9 +360,6 @@ def evaluate_model(model, opponent_agent, board_size, games=20):
     return wins / games
 
 
-# ==============================================================================
-# NET2NET CURRICULUM WEIGHT SEEDING
-# ==============================================================================
 def transfer_weights(old_model, old_size, new_size):
     new_model = HexCNNPolicy(board_size=new_size)
     new_dict = new_model.state_dict()
@@ -386,7 +396,7 @@ def train():
 
     model = None
     best_score = -1.0
-    best_state = None  # Tracks the peak performing model parameters
+    best_state = None  
     global_episode = 0  
     current_board_size = 3
 
@@ -403,8 +413,7 @@ def train():
             model = transfer_weights(model, current_board_size, b_size).to(device)
             
         current_board_size = b_size
-        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, eps=1e-5)
-        last_loss_value = 0.0
+        optimizer = optim.Adam(model.parameters(), lr=stage["lr"], eps=1e-5)
 
         for episode in range(1, episodes + 1):
             global_episode += 1
@@ -413,7 +422,7 @@ def train():
             epsilon = stage["epsilon_start"] - progress * (stage["epsilon_start"] - stage["epsilon_end"])
             
             mode = "self-play" if episode <= (episodes * 0.3) else "anti-greedy"
-            cnn_player = BLUE if (mode == "anti-greedy" and random() < 0.70) else RED
+            cnn_player = BLUE if (mode == "anti-greedy" and rand_func() < 0.70) else RED
 
             game = hexPosition(size=b_size)
             states, actions, old_log_probs, old_values, masks, rewards, players = [], [], [], [], [], [], []
@@ -482,23 +491,20 @@ def train():
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRAD_NORM)
                 optimizer.step()
-                last_loss_value = loss.item()
 
             if episode % 500 == 0:
                 greedy_score = evaluate_model(model, greedy_agent, board_size=b_size, games=40)
                 epsilon_score = evaluate_model(model, epsilon_greedy_agent, board_size=b_size, games=40)
                 combined_score = 0.70 * greedy_score + 0.30 * epsilon_score
                 
-                # ONLY track checkpoint peaks during the final target stage (Stage 3)
                 if stage_idx == 2:
-                    if combined_score > best_score:
+                    if combined_score >= best_score:
                         best_score = combined_score
                         best_state = {key: val.detach().cpu().clone() for key, val in model.state_dict().items()}
                         print(f" >>> New Peak Checkpoint Saved! Score: {best_score*100:.1f}%")
                 
                 print(f"Stage {stage_idx+1} Ep {episode}: Greedy={greedy_score*100:.1f}% | E-Greedy={epsilon_score*100:.1f}% | Combined={combined_score*100:.1f}%")
 
-    # If we found a peak model during Stage 3, reload it before final export
     if best_state is not None:
         print(f"\nReloading peak checkpoint weights ({best_score*100:.2f}%)...")
         model.load_state_dict(best_state)
