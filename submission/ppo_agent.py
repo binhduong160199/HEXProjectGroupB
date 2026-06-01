@@ -13,15 +13,17 @@ BLUE = -1
 MODEL_PATH = "ppo_cnn_hex.pt"
 
 # Cache model to avoid reloading every time the agent is called
-_loaded_model = None 
+_loaded_model = None
 _loaded_board_size = None
 
-# Convert to index for model input/output
+
+# Convert board coordinates to scalar action index
 def action_to_index(move, board_size):
     row, col = move
     return row * board_size + col
 
-# Convert back from index to board coordinates
+
+# Convert scalar action index back to board coordinates
 def index_to_action(index, board_size):
     row = index // board_size
     col = index % board_size
@@ -43,6 +45,7 @@ def get_neighbors(row, col, size):
         for r, c in candidates
         if 0 <= r < size and 0 <= c < size
     ]
+
 
 # Check if the given player has a winning path on the board using DFS
 def has_winning_path(board, player):
@@ -86,7 +89,8 @@ def has_winning_path(board, player):
 
     return False
 
-# Check if placing a piece for the given player in any of the action_set moves results in an immediate win
+
+# Check if placing a piece for the given player in any valid move results in an immediate win
 def find_winning_move(board, action_set, player):
     for move in action_set:
         test_board = deepcopy(board)
@@ -98,7 +102,8 @@ def find_winning_move(board, action_set, player):
 
     return None
 
-# If no winning/blocking move is found, choose the move closest to the center
+
+# Fallback if no model file exists
 def choose_center_move(board, action_set):
     size = len(board)
     center = (size - 1) / 2
@@ -128,7 +133,7 @@ def load_model(board_size):
         model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
         model.eval()
     else:
-        print("Warning: ppo_cnn_hex.pt not found. Using center move fallback.")
+        print(f"Warning: {MODEL_PATH} not found. Using center move fallback.")
 
     _loaded_model = model
     _loaded_board_size = board_size
@@ -136,11 +141,53 @@ def load_model(board_size):
     return model
 
 
-def cnn_ppo_agent(board, action_set):
+def pure_cnn_ppo_agent(board, action_set):
+    """
+    Pure PPO-CNN agent.
+
+    This agent uses only the learned CNN policy.
+    It does NOT manually check immediate wins or blocks.
+    This makes it a fairer comparison against greedy baselines.
+    """
     if not action_set:
         return None
 
     board_size = len(board)
+    current_player = get_current_player(board)
+
+    if not os.path.exists(MODEL_PATH):
+        return choose_center_move(board, action_set)
+
+    model = load_model(board_size)
+    state = encode_board(board, current_player).unsqueeze(0)
+
+    with torch.no_grad():
+        logits, value = model(state)
+
+    logits = logits.squeeze(0)
+
+    # Mask illegal moves so the model cannot choose occupied cells
+    masked_logits = torch.full_like(logits, -1e9)
+
+    for move in action_set:
+        action_index = action_to_index(move, board_size)
+        masked_logits[action_index] = logits[action_index]
+
+    best_action = torch.argmax(masked_logits).item()
+
+    return index_to_action(best_action, board_size)
+
+
+def tactical_cnn_ppo_agent(board, action_set):
+    """
+    PPO-CNN agent with tactical safety layer.
+
+    This version first checks immediate win/block situations.
+    If no urgent tactical move exists, it uses the CNN-PPO policy.
+    """
+    if not action_set:
+        return None
+
     current_player = get_current_player(board)
     opponent = -current_player
 
@@ -154,23 +201,14 @@ def cnn_ppo_agent(board, action_set):
     if blocking_move is not None:
         return blocking_move
 
-    # 3. Use CNN-PPO
-    if not os.path.exists(MODEL_PATH):
-        return choose_center_move(board, action_set)
+    # 3. Otherwise use learned CNN-PPO policy
+    return pure_cnn_ppo_agent(board, action_set)
 
-    model = load_model(board_size)
-    state = encode_board(board, current_player).unsqueeze(0)
 
-    with torch.no_grad():
-        logits, value = model(state)
+# Main exported PPO agent
+# Use pure version for fair baseline comparison.
+# Switch to tactical version if you want strongest gameplay.
+def cnn_ppo_agent(board, action_set):
+    #return pure_cnn_ppo_agent(board, action_set)
 
-    logits = logits.squeeze(0)
-    masked_logits = torch.full_like(logits, -1e9)
-
-    for move in action_set:
-        action_index = action_to_index(move, board_size)
-        masked_logits[action_index] = logits[action_index]
-
-    best_action = torch.argmax(masked_logits).item()
-
-    return index_to_action(best_action, board_size)
+    return tactical_cnn_ppo_agent(board, action_set)
