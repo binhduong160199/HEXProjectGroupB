@@ -11,9 +11,19 @@ from hex_engine import hexPosition, EMPTY, RED, BLUE
 from submission.cnn_policy import HexCNNPolicy
 from submission.board_encoding import encode_board
 
-
-BOARD_SIZE = 7
-EPISODES = 12000
+# ==============================================================================
+# REINFORCEMENT LEARNING TUNED CURRICULUM CONFIGURATION
+# ==============================================================================
+CURRICULUM = [
+    # Stage 1: 3x3 - High initial exploration to learn basic layout rules
+    {"board_size": 3, "episodes": 4000, "epsilon_start": 0.40, "epsilon_end": 0.15, "block_reward": 0.05, "win_reward": 0.10},
+    
+    # Stage 2: 5x5 - Strategic transition with higher stakes for tactical mistakes
+    {"board_size": 5, "episodes": 5000, "epsilon_start": 0.25, "epsilon_end": 0.08, "block_reward": 0.15, "win_reward": 0.25},
+    
+    # Stage 3: 7x7 - Target size refinement. Low final exploration to cement a winning policy
+    {"board_size": 7, "episodes": 6000, "epsilon_start": 0.12, "epsilon_end": 0.02, "block_reward": 0.30, "win_reward": 0.50}
+]
 
 GAMMA = 0.97
 PPO_EPOCHS = 2
@@ -47,7 +57,6 @@ def index_to_action(index, board_size):
 def get_current_player(board):
     red_count = sum(cell == RED for row in board for cell in row)
     blue_count = sum(cell == BLUE for row in board for cell in row)
-
     return RED if red_count == blue_count else BLUE
 
 
@@ -60,12 +69,7 @@ def get_neighbors(row, col, size):
         (row - 1, col + 1),
         (row + 1, col - 1),
     ]
-
-    return [
-        (r, c)
-        for r, c in candidates
-        if 0 <= r < size and 0 <= c < size
-    ]
+    return [(r, c) for r, c in candidates if 0 <= r < size and 0 <= c < size]
 
 
 def has_winning_path(board, player):
@@ -78,13 +82,10 @@ def has_winning_path(board, player):
             if board[row][0] == RED:
                 stack.append((row, 0))
                 visited.add((row, 0))
-
         while stack:
             row, col = stack.pop()
-
             if col == size - 1:
                 return True
-
             for nr, nc in get_neighbors(row, col, size):
                 if board[nr][nc] == RED and (nr, nc) not in visited:
                     visited.add((nr, nc))
@@ -95,18 +96,14 @@ def has_winning_path(board, player):
             if board[0][col] == BLUE:
                 stack.append((0, col))
                 visited.add((0, col))
-
         while stack:
             row, col = stack.pop()
-
             if row == size - 1:
                 return True
-
             for nr, nc in get_neighbors(row, col, size):
                 if board[nr][nc] == BLUE and (nr, nc) not in visited:
                     visited.add((nr, nc))
                     stack.append((nr, nc))
-
     return False
 
 
@@ -115,34 +112,27 @@ def find_winning_move(board, action_set, player):
         test_board = deepcopy(board)
         row, col = move
         test_board[row][col] = player
-
         if has_winning_path(test_board, player):
             return move
-
     return None
 
 
 def choose_center_move(board, action_set):
     size = len(board)
     center = (size - 1) / 2
-
     best_move = None
     best_distance = float("inf")
-
     for row, col in action_set:
         distance = abs(row - center) + abs(col - center)
-
         if distance < best_distance:
             best_distance = distance
             best_move = (row, col)
-
     return best_move
 
 
 def greedy_agent(board, action_set):
     if not action_set:
         return None
-
     current_player = get_current_player(board)
     opponent = -current_player
 
@@ -160,27 +150,22 @@ def greedy_agent(board, action_set):
 def random_agent(board, action_set):
     if not action_set:
         return None
-
     return choice(action_set)
 
 
 def epsilon_greedy_agent(board, action_set, epsilon=0.2):
     if not action_set:
         return None
-
     if random() < epsilon:
         return random_agent(board, action_set)
-
     return greedy_agent(board, action_set)
 
 
 def cell_cost(cell_value, player):
     if cell_value == player:
         return 0.0
-
     if cell_value == EMPTY:
         return 1.0
-
     return 1000.0
 
 
@@ -197,7 +182,6 @@ def shortest_connection_distance(board, player):
 
         def target_reached(r, c):
             return c == size - 1
-
     else:
         for col in range(size):
             cost = cell_cost(board[0][col], player)
@@ -209,57 +193,25 @@ def shortest_connection_distance(board, player):
 
     while heap:
         current_distance, row, col = heapq.heappop(heap)
-
         if current_distance > distances[row][col]:
             continue
-
         if target_reached(row, col):
             return current_distance
-
         for nr, nc in get_neighbors(row, col, size):
             new_distance = current_distance + cell_cost(board[nr][nc], player)
-
             if new_distance < distances[nr][nc]:
                 distances[nr][nc] = new_distance
                 heapq.heappush(heap, (new_distance, nr, nc))
-
     return 1000.0
 
 
-def reward_curriculum(episode):
-    if episode <= 4000:
-        return {
-            "path_weight": 0.008,
-            "opponent_weight": 0.003,
-            "block_reward": 0.00,
-            "miss_block_penalty": 0.00,
-            "win_reward": 0.00,
-            "reward_clip": 0.05,
-        }
-
-    if episode <= 8000:
-        return {
-            "path_weight": 0.010,
-            "opponent_weight": 0.004,
-            "block_reward": 0.04,
-            "miss_block_penalty": -0.02,
-            "win_reward": 0.05,
-            "reward_clip": 0.07,
-        }
-
-    return {
-        "path_weight": 0.010,
-        "opponent_weight": 0.005,
-        "block_reward": 0.06,
-        "miss_block_penalty": -0.03,
-        "win_reward": 0.08,
-        "reward_clip": 0.08,
-    }
-
-
-def compute_path_potential_reward(board, action_set, move, player, episode):
+def compute_path_potential_reward(board, action_set, move, player, stage_cfg, episode_in_stage):
     opponent = -player
-    cfg = reward_curriculum(episode)
+    
+    # Early path weights from baseline potential matrix
+    path_w = 0.010 if episode_in_stage > 2000 else 0.008
+    opp_w = 0.005 if episode_in_stage > 2000 else 0.003
+    reward_clip = 0.08 if episode_in_stage > 2000 else 0.05
 
     before_own = shortest_connection_distance(board, player)
     before_opponent = shortest_connection_distance(board, opponent)
@@ -275,89 +227,50 @@ def compute_path_potential_reward(board, action_set, move, player, episode):
     opponent_damage = after_opponent - before_opponent
 
     reward = 0.0
-    reward += cfg["path_weight"] * own_improvement
-    reward += cfg["opponent_weight"] * opponent_damage
+    reward += path_w * own_improvement
+    reward += opp_w * opponent_damage
 
     own_winning_move = find_winning_move(board, action_set, player)
     opponent_winning_move = find_winning_move(board, action_set, opponent)
 
     if own_winning_move is not None and move == own_winning_move:
-        reward += cfg["win_reward"]
+        reward += stage_cfg["win_reward"]
 
     if opponent_winning_move is not None:
         if move == opponent_winning_move:
-            reward += cfg["block_reward"]
+            reward += stage_cfg["block_reward"]
         else:
-            reward += cfg["miss_block_penalty"]
+            # Heavily punish missed blocks to force tactical awareness against rule baselines
+            reward -= (stage_cfg["block_reward"] * 2.0)
 
-    reward = max(min(reward, cfg["reward_clip"]), -cfg["reward_clip"])
-
-    return reward
+    return max(min(reward, reward_clip), -reward_clip)
 
 
 def create_action_mask(action_set, board_size, device):
     mask = torch.zeros(board_size * board_size, dtype=torch.bool, device=device)
-
     for move in action_set:
-        index = action_to_index(move, board_size)
-        mask[index] = True
-
+        mask[action_to_index(move, board_size)] = True
     return mask
-
-
-def exploration_epsilon(episode):
-    if episode <= 4000:
-        return 0.35
-
-    if episode <= 8000:
-        return 0.20
-
-    return 0.08
-
-
-def training_mode(episode):
-    if episode <= 6000:
-        return "self-play"
-
-    return "anti-greedy"
-
-
-def choose_cnn_player_against_greedy():
-    if random() < 0.70:
-        return BLUE
-
-    return RED
 
 
 def select_action(model, board, current_player, action_set, board_size, device, epsilon):
     state = encode_board(board, current_player).to(device)
-    state_batch = state.unsqueeze(0)
-
-    logits, value = model(state_batch)
+    logits, value = model(state.unsqueeze(0))
 
     if not is_finite_tensor(logits) or not is_finite_tensor(value):
         move = choice(action_set)
-        action_index = torch.tensor(action_to_index(move, board_size), device=device)
-        log_prob = torch.tensor(0.0, device=device)
-        mask = create_action_mask(action_set, board_size, device)
-        return move, action_index, log_prob, torch.tensor(0.0, device=device), state, mask
+        return move, torch.tensor(action_to_index(move, board_size), device=device), torch.tensor(0.0, device=device), torch.tensor(0.0, device=device), state, create_action_mask(action_set, board_size, device)
 
-    logits = logits.squeeze(0)
-    logits = torch.clamp(logits, -LOGIT_CLIP, LOGIT_CLIP)
-
-    value = value.view(-1)[0]
-    value = torch.clamp(value, -2.0, 2.0)
+    logits = torch.clamp(logits.squeeze(0), -LOGIT_CLIP, LOGIT_CLIP)
+    value = torch.clamp(value.view(-1)[0], -2.0, 2.0)
 
     mask = create_action_mask(action_set, board_size, device)
-
     masked_logits = torch.full_like(logits, -1e4)
     masked_logits[mask] = logits[mask]
 
     if not is_finite_tensor(masked_logits):
         move = choice(action_set)
-        action_index = torch.tensor(action_to_index(move, board_size), device=device)
-        log_prob = torch.tensor(0.0, device=device)
-        return move, action_index, log_prob, value, state, mask
+        return move, torch.tensor(action_to_index(move, board_size), device=device), torch.tensor(0.0, device=device), value, state, mask
 
     dist = Categorical(logits=masked_logits)
 
@@ -373,7 +286,6 @@ def select_action(model, board, current_player, action_set, board_size, device, 
         action_index = torch.tensor(action_to_index(move, board_size), device=device)
 
     log_prob = dist.log_prob(action_index)
-
     if not is_finite_tensor(log_prob):
         log_prob = torch.tensor(0.0, device=device)
 
@@ -383,336 +295,217 @@ def select_action(model, board, current_player, action_set, board_size, device, 
 def compute_returns(rewards, gamma, device):
     returns = []
     running_return = 0.0
-
     for reward in reversed(rewards):
         running_return = reward + gamma * running_return
         returns.insert(0, running_return)
-
     return torch.tensor(returns, dtype=torch.float32, device=device)
 
 
-def cnn_policy_move(model, board, action_set):
-    board_size = len(board)
+def cnn_policy_move(model, board, action_set, board_size):
     current_player = get_current_player(board)
-
     state = encode_board(board, current_player).unsqueeze(0)
-
     with torch.no_grad():
-        logits, value = model(state)
-
-    logits = logits.squeeze(0)
-    logits = torch.clamp(logits, -LOGIT_CLIP, LOGIT_CLIP)
-
+        logits, _ = model(state)
+    logits = torch.clamp(logits.squeeze(0), -LOGIT_CLIP, LOGIT_CLIP)
     masked_logits = torch.full_like(logits, -1e4)
-
     for move in action_set:
-        index = action_to_index(move, board_size)
-        masked_logits[index] = logits[index]
-
-    best_index = torch.argmax(masked_logits).item()
-
-    return index_to_action(best_index, board_size)
+        idx = action_to_index(move, board_size)
+        masked_logits[idx] = logits[idx]
+    return index_to_action(torch.argmax(masked_logits).item(), board_size)
 
 
-def validation_agent(model, board, action_set):
+def validation_agent(model, board, action_set, board_size):
     current_player = get_current_player(board)
     opponent = -current_player
-
     winning_move = find_winning_move(board, action_set, current_player)
-    if winning_move is not None:
-        return winning_move
-
+    if winning_move is not None: return winning_move
     blocking_move = find_winning_move(board, action_set, opponent)
-    if blocking_move is not None:
-        return blocking_move
-
-    return cnn_policy_move(model, board, action_set)
+    if blocking_move is not None: return blocking_move
+    return cnn_policy_move(model, board, action_set, board_size)
 
 
-def play_validation_game(model, opponent_agent, cnn_is_red):
-    game = hexPosition(size=BOARD_SIZE)
-
+def play_validation_game(model, opponent_agent, board_size, cnn_is_red):
+    game = hexPosition(size=board_size)
     while game.winner == EMPTY:
         action_set = game.get_action_space()
-
         if game.player == RED:
-            if cnn_is_red:
-                move = validation_agent(model, game.board, action_set)
-            else:
-                move = opponent_agent(game.board, action_set)
+            move = validation_agent(model, game.board, action_set, board_size) if cnn_is_red else opponent_agent(game.board, action_set)
         else:
-            if cnn_is_red:
-                move = opponent_agent(game.board, action_set)
-            else:
-                move = validation_agent(model, game.board, action_set)
-
-        if move not in action_set:
-            move = choice(action_set)
-
+            move = opponent_agent(game.board, action_set) if cnn_is_red else validation_agent(model, game.board, action_set, board_size)
+        if move not in action_set: move = choice(action_set)
         game.move(move)
-
-    if cnn_is_red:
-        return game.winner == RED
-
-    return game.winner == BLUE
+    return (game.winner == RED) if cnn_is_red else (game.winner == BLUE)
 
 
-def evaluate_model(model, opponent_agent, games=40):
+def evaluate_model(model, opponent_agent, board_size, games=20):
     model.eval()
     wins = 0
-
     for i in range(games):
-        cnn_is_red = i % 2 == 0
-
-        if play_validation_game(model, opponent_agent, cnn_is_red):
+        if play_validation_game(model, opponent_agent, board_size, cnn_is_red=(i % 2 == 0)):
             wins += 1
-
     model.train()
-
     return wins / games
+
+
+# ==============================================================================
+# NET2NET CURRICULUM WEIGHT SEEDING
+# ==============================================================================
+def transfer_weights(old_model, old_size, new_size):
+    new_model = HexCNNPolicy(board_size=new_size)
+    new_dict = new_model.state_dict()
+    old_dict = old_model.state_dict()
+
+    old_features = 64 * old_size * old_size
+
+    for name, param in old_dict.items():
+        if "conv" in name:
+            new_dict[name].copy_(param)
+        elif "fc_policy.weight" in name:
+            for r in range(old_size):
+                old_start_out = r * old_size
+                new_start_out = r * new_size
+                new_dict[name][new_start_out:new_start_out+old_size, :old_features].copy_(
+                    param[old_start_out:old_start_out+old_size, :]
+                )
+        elif "fc_policy.bias" in name:
+            for r in range(old_size):
+                new_dict[name][r*new_size : r*new_size+old_size].copy_(param[r*old_size : r*old_size+old_size])
+        elif "fc_value.weight" in name:
+            new_dict[name][:, :old_features].copy_(param)
+        elif "fc_value.bias" in name:
+            new_dict[name].copy_(param)
+            
+    new_model.load_state_dict(new_dict)
+    return new_model
 
 
 def train():
     start_time = time.time()
-
     device = get_device()
     print("Using device:", device)
 
-    game = hexPosition(size=BOARD_SIZE)
-    model = HexCNNPolicy(board_size=BOARD_SIZE).to(device)
-
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=LEARNING_RATE,
-        eps=1e-5,
-    )
-
-    last_loss_value = 0.0
+    model = None
     best_score = -1.0
-    best_state = None
+    best_state = None  # Tracks the peak performing model parameters
+    global_episode = 0  
+    current_board_size = 3
 
-    for episode in range(1, EPISODES + 1):
-        game.reset()
-
-        epsilon = exploration_epsilon(episode)
-        mode = training_mode(episode)
-
-        if mode == "anti-greedy":
-            cnn_player = choose_cnn_player_against_greedy()
+    for stage_idx, stage in enumerate(CURRICULUM):
+        b_size = stage["board_size"]
+        episodes = stage["episodes"]
+        
+        print(f"\n--- STARTING STAGE {stage_idx+1}: Board Size {b_size}x{b_size} ---")
+        
+        if model is None:
+            model = HexCNNPolicy(board_size=b_size).to(device)
         else:
-            cnn_player = None
+            print(f"Transferring weights from {current_board_size} to {b_size} layout space safely...")
+            model = transfer_weights(model, current_board_size, b_size).to(device)
+            
+        current_board_size = b_size
+        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, eps=1e-5)
+        last_loss_value = 0.0
 
-        states = []
-        actions = []
-        old_log_probs = []
-        old_values = []
-        masks = []
-        rewards = []
-        players = []
+        for episode in range(1, episodes + 1):
+            global_episode += 1
+            
+            progress = episode / episodes
+            epsilon = stage["epsilon_start"] - progress * (stage["epsilon_start"] - stage["epsilon_end"])
+            
+            mode = "self-play" if episode <= (episodes * 0.3) else "anti-greedy"
+            cnn_player = BLUE if (mode == "anti-greedy" and random() < 0.70) else RED
 
-        while game.winner == EMPTY:
-            current_player = game.player
-            action_set = game.get_action_space()
+            game = hexPosition(size=b_size)
+            states, actions, old_log_probs, old_values, masks, rewards, players = [], [], [], [], [], [], []
 
-            if mode == "self-play":
-                train_this_turn = True
-            else:
-                train_this_turn = current_player == cnn_player
+            while game.winner == EMPTY:
+                current_player = game.player
+                action_set = game.get_action_space()
+                train_this_turn = (mode == "self-play") or (current_player == cnn_player)
 
-            if train_this_turn:
-                move, action_index, log_prob, value, state, mask = select_action(
-                    model=model,
-                    board=game.board,
-                    current_player=current_player,
-                    action_set=action_set,
-                    board_size=BOARD_SIZE,
-                    device=device,
-                    epsilon=epsilon,
-                )
+                if train_this_turn:
+                    move, action_index, log_prob, value, state, mask = select_action(
+                        model, game.board, current_player, action_set, b_size, device, epsilon
+                    )
+                    shaped_reward = compute_path_potential_reward(game.board, action_set, move, current_player, stage, episode)
+                    
+                    states.append(state); actions.append(action_index); old_log_probs.append(log_prob.detach())
+                    old_values.append(value.detach()); masks.append(mask); rewards.append(shaped_reward)
+                    players.append(current_player)
+                else:
+                    move = greedy_agent(game.board, action_set)
+                if move not in action_set: move = choice(action_set)
+                game.move(move)
 
-                shaped_reward = compute_path_potential_reward(
-                    board=game.board,
-                    action_set=action_set,
-                    move=move,
-                    player=current_player,
-                    episode=episode,
-                )
+            winner = game.winner
+            for i, player in enumerate(players):
+                if player == winner:
+                    rewards[i] += 5.0
+                else:
+                    rewards[i] -= 5.0
 
-                states.append(state)
-                actions.append(action_index)
-                old_log_probs.append(log_prob.detach())
-                old_values.append(value.detach())
-                masks.append(mask)
-                rewards.append(shaped_reward)
-                players.append(current_player)
+            if len(states) == 0: continue
 
-            else:
-                move = greedy_agent(game.board, action_set)
+            states = torch.stack(states).to(device)
+            actions = torch.stack(actions).to(device)
+            old_log_probs = torch.stack(old_log_probs).to(device)
+            old_values = torch.stack(old_values).to(device)
+            masks = torch.stack(masks).to(device)
 
-            if move not in action_set:
-                move = choice(action_set)
+            returns = compute_returns(rewards, GAMMA, device)
+            advantages = returns - old_values
+            if len(advantages) > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+            advantages = torch.clamp(advantages, -3.0, 3.0)
 
-            game.move(move)
+            for _ in range(PPO_EPOCHS):
+                logits, new_values = model(states)
+                logits = torch.clamp(logits, -LOGIT_CLIP, LOGIT_CLIP)
+                new_values = new_values.view(-1)
 
-        winner = game.winner
+                masked_logits = torch.full_like(logits, -1e4)
+                masked_logits[masks] = logits[masks]
 
-        for i, player in enumerate(players):
-            if player == winner:
-                rewards[i] += 1.0
-            else:
-                rewards[i] -= 1.0
+                dist = Categorical(logits=masked_logits)
+                new_log_probs = dist.log_prob(actions)
+                entropy = dist.entropy().mean()
 
-        if len(states) == 0:
-            continue
+                ratio = torch.exp(torch.clamp(new_log_probs - old_log_probs, -5.0, 5.0))
+                surrogate_1 = ratio * advantages
+                surrogate_2 = torch.clamp(ratio, 1.0 - CLIP_EPSILON, 1.0 + CLIP_EPSILON) * advantages
 
-        states = torch.stack(states).to(device)
-        actions = torch.stack(actions).to(device)
-        old_log_probs = torch.stack(old_log_probs).to(device)
-        old_values = torch.stack(old_values).to(device)
-        masks = torch.stack(masks).to(device)
+                policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
+                value_loss = F.smooth_l1_loss(new_values, returns)
+                loss = policy_loss + VALUE_COEF * value_loss - ENTROPY_COEF * entropy
 
-        returns = compute_returns(rewards, GAMMA, device)
-        returns = torch.clamp(returns, -2.0, 2.0)
-
-        advantages = returns - old_values
-
-        if len(advantages) > 1:
-            advantages = (advantages - advantages.mean()) / (
-                advantages.std(unbiased=False) + 1e-8
-            )
-
-        advantages = torch.clamp(advantages, -3.0, 3.0)
-
-        if (
-            not is_finite_tensor(states)
-            or not is_finite_tensor(actions.float())
-            or not is_finite_tensor(old_log_probs)
-            or not is_finite_tensor(old_values)
-            or not is_finite_tensor(returns)
-            or not is_finite_tensor(advantages)
-        ):
-            print("Non-finite rollout data. Skipping episode update.")
-            continue
-
-        for _ in range(PPO_EPOCHS):
-            logits, new_values = model(states)
-
-            if not is_finite_tensor(logits) or not is_finite_tensor(new_values):
-                print("Non-finite model output. Skipping this PPO update.")
-                continue
-
-            logits = torch.clamp(logits, -LOGIT_CLIP, LOGIT_CLIP)
-            new_values = new_values.view(-1)
-            new_values = torch.clamp(new_values, -2.0, 2.0)
-
-            masked_logits = torch.full_like(logits, -1e4)
-            masked_logits[masks] = logits[masks]
-
-            if not is_finite_tensor(masked_logits):
-                print("Non-finite logits. Skipping this PPO update.")
-                continue
-
-            dist = Categorical(logits=masked_logits)
-
-            new_log_probs = dist.log_prob(actions)
-            entropy = dist.entropy().mean()
-
-            if not is_finite_tensor(new_log_probs) or not is_finite_tensor(entropy):
-                print("Non-finite distribution values. Skipping this PPO update.")
-                continue
-
-            log_ratio = new_log_probs - old_log_probs
-            log_ratio = torch.clamp(log_ratio, -5.0, 5.0)
-            ratio = torch.exp(log_ratio)
-
-            surrogate_1 = ratio * advantages
-            surrogate_2 = torch.clamp(
-                ratio,
-                1.0 - CLIP_EPSILON,
-                1.0 + CLIP_EPSILON,
-            ) * advantages
-
-            policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
-
-            value_loss = F.smooth_l1_loss(
-                new_values.view(-1),
-                returns.view(-1),
-            )
-
-            loss = policy_loss + VALUE_COEF * value_loss - ENTROPY_COEF * entropy
-
-            if not is_finite_tensor(loss):
-                print("Non-finite loss. Skipping this PPO update.")
-                continue
-
-            optimizer.zero_grad()
-            loss.backward()
-
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                max_norm=MAX_GRAD_NORM,
-            )
-
-            if not torch.isfinite(grad_norm):
-                print("Non-finite gradient detected. Skipping optimizer step.")
                 optimizer.zero_grad()
-                continue
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRAD_NORM)
+                optimizer.step()
+                last_loss_value = loss.item()
 
-            optimizer.step()
+            if episode % 500 == 0:
+                greedy_score = evaluate_model(model, greedy_agent, board_size=b_size, games=40)
+                epsilon_score = evaluate_model(model, epsilon_greedy_agent, board_size=b_size, games=40)
+                combined_score = 0.70 * greedy_score + 0.30 * epsilon_score
+                
+                # ONLY track checkpoint peaks during the final target stage (Stage 3)
+                if stage_idx == 2:
+                    if combined_score > best_score:
+                        best_score = combined_score
+                        best_state = {key: val.detach().cpu().clone() for key, val in model.state_dict().items()}
+                        print(f" >>> New Peak Checkpoint Saved! Score: {best_score*100:.1f}%")
+                
+                print(f"Stage {stage_idx+1} Ep {episode}: Greedy={greedy_score*100:.1f}% | E-Greedy={epsilon_score*100:.1f}% | Combined={combined_score*100:.1f}%")
 
-            last_loss_value = loss.item()
-
-        if episode % 500 == 0:
-            greedy_score = evaluate_model(model, greedy_agent, games=40)
-            epsilon_score = evaluate_model(model, epsilon_greedy_agent, games=40)
-
-            combined_score = 0.70 * greedy_score + 0.30 * epsilon_score
-
-            if combined_score > best_score:
-                best_score = combined_score
-                best_state = {
-                    key: value.detach().cpu().clone()
-                    for key, value in model.state_dict().items()
-                }
-
-            print(
-                f"Validation episode {episode}: "
-                f"greedy = {greedy_score * 100:.2f}% | "
-                f"epsilon-greedy = {epsilon_score * 100:.2f}% | "
-                f"combined = {combined_score * 100:.2f}% | "
-                f"best = {best_score * 100:.2f}%"
-            )
-
-        if episode % 100 == 0:
-            winner_name = "RED" if winner == RED else "BLUE"
-            cfg = reward_curriculum(episode)
-
-            if mode == "self-play":
-                cnn_info = "BOTH"
-            else:
-                cnn_info = "RED" if cnn_player == RED else "BLUE"
-
-            print(
-                f"Episode {episode}/{EPISODES} | "
-                f"Mode: {mode} | "
-                f"CNN: {cnn_info} | "
-                f"Epsilon: {epsilon:.2f} | "
-                f"Reward clip: {cfg['reward_clip']:.2f} | "
-                f"Winner: {winner_name} | "
-                f"Loss: {last_loss_value:.4f}"
-            )
-
+    # If we found a peak model during Stage 3, reload it before final export
     if best_state is not None:
+        print(f"\nReloading peak checkpoint weights ({best_score*100:.2f}%)...")
         model.load_state_dict(best_state)
 
+    print("\nTraining complete! Saving optimized native 7x7 model checkpoint...")
     torch.save(model.state_dict(), MODEL_PATH)
-
-    total_time = time.time() - start_time
-
-    print(f"Saved best model to {MODEL_PATH}")
-    print(f"Best combined validation score: {best_score * 100:.2f}%")
-    print(f"Training time: {total_time:.2f} seconds")
-    print(f"Training time: {total_time / 60:.2f} minutes")
+    print(f"Saved optimized model to {MODEL_PATH} successfully. Overall Time: {(time.time() - start_time)/60:.2f} minutes.")
 
 
 if __name__ == "__main__":
